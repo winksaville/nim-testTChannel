@@ -1,24 +1,89 @@
 # Example from http://forum.nim-lang.org/t/959 thread in the forum
-import strutils
+import strutils, threadpool, locks
+
+when not defined(release):
+  const DBG = true
+else:
+  const DBG = false
+
+const
+  numThreads = 2
+  loops = 2
+
 
 type
-    StringChannel = TChannel[string]
+  BiChannel[T] = object
+    recvChnl: ptr TChannel[T]
+    xmitChnl: ptr TChannel[T]
+
+  IntegerBiChannel = BiChannel[int]
+
 
 var
-  channels : array[0..3, StringChannel]
-  thr: array [0..3, TThread[ptr StringChannel]]
+  thr: array [1..numThreads, TThread[BiChannel[int]]]
 
-proc consumer(channel: ptr StringChannel) {.thread.} =
-    echo channel[].recv()
-    channel[].send("fighters")
+  chnl1: TChannel[int]
+  chnl2: TChannel[int]
+  pingChannels: BiChannel[int]
+  pongChannels: BiChannel[int]
+
+  gDone = false
+  gDoneLock: TLock
+  gDoneCond: TCond
+  gPongCounter = 0
+  gPingCounter = 0
+
+proc ping(channel: BiChannel) {.thread.} =
+  echo "ping start"
+  var v = 0
+  while gPingCounter < loops:
+    v += 1
+    when DBG: echo "ping xmitChnl.send " & $v
+    channel.xmitChnl[].send(v)
+    when DBG: echo "ping recvChnl.recv"
+    v = channel.recvChnl[].recv()
+    when DBG: echo "ping v=" & $v
+    gPingCounter += 1
+  echo "ping done"
+  
+
+proc pong(channel: BiChannel) {.thread.} =
+  echo "pong start"
+  while gPongCounter < loops:
+    when DBG: echo "pong recvChnl.recv"
+    var v:int = channel.recvChnl[].recv()
+    when DBG: echo "pong v=" & $v
+    v += 1
+    when DBG: echo "pong xmitChnl.send " & $v
+    channel.xmitChnl[].send(v)
+    gPongCounter += 1
+  gDone = true;
+  gDoneCond.signal()
+  echo "pong done"
 
 proc main =
-  for ix in 0..3: channels[ix].open()
-  for ix in 0..3: createThread(thr[ix], consumer, addr(channels[ix]))
-  for ix in 0..3: channels[ix].send("foo (" & intToStr(ix) & ")")
+  gDoneLock.initLock()
+  gDoneCond.initCond()
+
+  chnl1.open()
+  chnl2.open()
+
+  pingChannels.recvChnl = addr chnl1
+  pingChannels.xmitChnl = addr chnl2
+
+  pongChannels.recvChnl = addr chnl2
+  pongChannels.xmitChnl = addr chnl1
+
+  createThread(thr[1], ping, pingChannels)
+  createThread(thr[2], pong, pongChannels)
+
+  gDoneLock.acquire()
+  gDoneCond.wait(gDoneLock)
   joinThreads(thr)
-  for ix in 0..3: echo channels[ix].recv()
-  for ix in 0..3: channels[ix].close()
+
+  chnl1.close()
+  chnl2.close()
+  echo "done"
 
 when isMainModule:
   main()
