@@ -1,5 +1,5 @@
 # Example from http://forum.nim-lang.org/t/959 thread in the forum
-import strutils, threadpool, locks
+import strutils, times, parseopt2, threadpool, locks
 
 when not defined(release):
   const DBG = true
@@ -8,7 +8,18 @@ else:
 
 const
   numThreads = 2
+
+var
   loops = 2
+
+for kind, key, val in getopt():
+  when DBG: echo "kind=" & $kind & " key=" & key & " val=" & val
+  case kind:
+  of cmdShortOption:
+    case toLower(key):
+    of "l": loops = parseInt(val)
+    else: discard
+  else: discard
 
 
 type
@@ -34,8 +45,9 @@ var
   gPingCounter = 0
 
 proc ping(channel: BiChannel) {.thread.} =
-  echo "ping start"
-  var v = 0
+  echo "ping start wait for first message"
+  var v = channel.recvChnl[].recv()
+  echo "ping running"
   while gPingCounter < loops:
     v += 1
     when DBG: echo "ping xmitChnl.send " & $v
@@ -77,8 +89,21 @@ proc main =
   createThread(thr[1], ping, pingChannels)
   createThread(thr[2], pong, pongChannels)
 
+  var
+    startTime = epochTime()
+
+  pingChannels.recvChnl[].send(0)
+
   gDoneLock.acquire()
   gDoneCond.wait(gDoneLock)
+
+  var
+    endTime = epochTime()
+    messageCount = gPingCounter + gPongCounter
+    time = (((endTime - startTime) / float(messageCount))) * 1_000_000
+
+  # On my Ubuntu desktop 8.5us/msg
+  echo "t5 done: time=" & time.formatFloat(ffDecimal, 4) & "us/msg"
   joinThreads(thr)
 
   chnl1.close()
